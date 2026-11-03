@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>日本語点字ワープロ 試作版</title>
+<style>
+:root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#17202a;background:#f4f6f8}
+*{box-sizing:border-box}body{margin:0;padding:20px}.app{max-width:1050px;margin:auto}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+h1{font-size:1.45rem;margin:.2rem 0}.sub{color:#596579;font-size:.9rem}
+.panel{background:white;border:1px solid #dce2e8;border-radius:12px;padding:16px;margin:14px 0;box-shadow:0 2px 8px #17202a0a}
+label{font-weight:650;display:block;margin-bottom:8px}
+textarea{width:100%;min-height:110px;padding:12px;border:1px solid #b9c3ce;border-radius:8px;font:1.1rem/1.7 inherit;resize:vertical}
+.output{font-size:2rem;line-height:2.1;overflow-wrap:anywhere;min-height:60px;letter-spacing:.12em}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button,.filelabel{border:0;border-radius:8px;padding:10px 14px;background:#155eef;color:white;font-weight:650;cursor:pointer}
+button.secondary{background:#e8edf3;color:#17202a}button.voice{background:#087e6b}button.stop{background:#9b2c2c}button:focus,textarea:focus{outline:3px solid #9ec5ff;outline-offset:1px}
+small,.muted{color:#657184}.warning{color:#9b4b00;background:#fff4df;padding:10px;border-radius:8px;white-space:pre-wrap}
+.good{color:#12643a}.dots{display:grid;grid-template-columns:repeat(2,42px);grid-template-rows:repeat(3,42px);gap:8px;justify-content:center}
+.dot{border:1px solid #8994a3;border-radius:50%;display:grid;place-items:center;background:#f6f8fa}
+.dot.on{background:#182230;color:white;border-color:#182230}
+.cells{display:flex;gap:8px;flex-wrap:wrap}.cell{border:1px solid #d7dee6;border-radius:8px;padding:8px;min-width:65px;text-align:center}
+.cell .braille{font-size:2rem}.cell .num{font-size:.72rem;color:#657184}
+table{border-collapse:collapse;width:100%;font-size:.92rem}td,th{padding:7px;border-bottom:1px solid #e3e8ee;text-align:left}
+@media(max-width:600px){body{padding:10px}.output{font-size:1.55rem}}
+</style>
+</head>
+<body><main class="app">
+<header><div><h1>日本語点字ワープロ</h1><div class="sub">ブラウザ試作版 v0.4 — 数字・英字・句読符対応</div></div><span class="muted">オフライン動作</span></header>
+
+<section class="panel">
+<label for="src">日本語入力（漢字は先に仮名にしてください）</label>
+<textarea id="src" spellcheck="false">こんにちは
+ぼくは ほんやへ いく</textarea>
+<div class="row" style="margin-top:10px">
+<label style="font-weight:400"><input id="particles" type="checkbox" checked> 助詞の「は・へ」を発音どおり「ワ・エ」に変換（標準）</label>
+</div>
+<div class="row" style="margin-top:10px">
+<button id="convert">点字に変換</button>
+<button class="voice" id="speak">入力文字列を発声</button>
+<button class="stop" id="stopSpeak">発声停止</button>
+<button class="secondary" id="clear">消去</button>
+<button class="secondary" id="save">JSON保存</button>
+<label class="filelabel" for="load" style="margin:0">JSON読込</label><input id="load" type="file" accept=".json,application/json" hidden>
+</div>
+</section>
+
+<section class="panel">
+<label>点字表示（Unicode）</label>
+<div id="braille" class="output" aria-live="polite"></div>
+<div id="warnings" class="warning" hidden></div>
+<div class="muted" id="stats"></div>
+</section>
+
+<section class="panel">
+<label>6点マスの内訳</label>
+<div id="cells" class="cells"></div>
+<p class="muted">点の番号は左列が1・2・3、右列が4・5・6です。黒い点が凸点を表します。</p>
+</section>
+
+<section class="panel">
+<label>現状表現できる点字の一覧</label>
+<p class="muted">現在の変換エンジンが扱う仮名・濁音・半濁音・拗音・数字・英字・記号を一覧表示します。点番号は凸面から見た配置です。下の「6点の全パターン」は直接入力で表現できる64種類です。</p>
+<div class="row" style="margin-bottom:10px">
+<label style="margin:0;font-weight:400">分類で絞り込み <select id="inventoryFilter"><option value="all">すべて</option><option value="清音">清音</option><option value="濁音">濁音</option><option value="半濁音">半濁音</option><option value="拗音">拗音</option><option value="数字">数字</option><option value="英字">英字</option><option value="記号">記号</option><option value="符号">前置符号</option></select></label>
+<span id="inventoryCount" class="muted"></span>
+</div>
+<div style="overflow-x:auto"><table><thead><tr><th>分類</th><th>入力</th><th>点字</th><th>点番号</th></tr></thead><tbody id="inventory"></tbody></table></div>
+<h3>6点の全パターン（64種類）</h3>
+<div id="allPatterns" class="cells"></div>
+</section>
+
+<section class="panel">
+<label>直接6点入力</label>
+<div class="row" style="justify-content:center">
+<div class="dots" id="dotpad"></div>
+</div>
+<div class="row" style="justify-content:center;margin-top:12px">
+<button id="addcell">このマスを追加</button><button class="secondary" id="backcell">最後のマスを削除</button><button class="secondary" id="clearcells">全消去</button>
+</div>
+<div id="direct" class="output" style="text-align:center;margin-top:8px"></div>
+</section>
+
+<section class="panel">
+<label>自動検査（仮名・数字・英字・記号・64点パターン）</label>
+<div id="tests"></div>
+<p class="muted">清音・濁音・半濁音・拗音・拗濁音・拗半濁音・促音・撥音・長音・助詞の読み替えを検査します。漢字の自動読み、文節判断、英語の縮約点字、BES/BSE入出力は未対応です。</p>
+</section>
+<footer class="muted">注意：本版は変換検査用です。正式な点訳には日本点字委員会の規則と公式教材による最終照合が必要です。</footer>
+</main>
+<script>
+"use strict";
+// Dot bit layout: bit0..bit5 = dots 1..6; Unicode Braille U+2800 uses the same low six bits.
+const gojuon={
+'あ':1,'い':3,'う':9,'え':11,'お':10,
+'か':33,'き':35,'く':41,'け':43,'こ':42,
+'さ':49,'し':51,'す':57,'せ':59,'そ':58,
+'た':21,'ち':23,'つ':29,'て':31,'と':30,
+'な':5,'に':7,'ぬ':13,'ね':15,'の':14,
+'は':37,'ひ':39,'ふ':45,'へ':47,'ほ':46,
+'ま':53,'み':55,'む':61,'め':63,'も':62,
+'ら':17,'り':19,'る':25,'れ':27,'ろ':26,
+'や':12,'ゆ':44,'よ':28,'わ':4,'を':20,'ん':36
+};
+const smallY={'ゃ':'a','ゅ':'u','ょ':'o'};
+const daku={'が':'か','ぎ':'き','ぐ':'く','げ':'け','ご':'こ','ざ':'さ','じ':'し','ず':'す','ぜ':'せ','ぞ':'そ','だ':'た','ぢ':'ち','づ':'つ','で':'て','ど':'と','ば':'は','び':'ひ','ぶ':'ふ','べ':'へ','ぼ':'ほ'};
+const hand={'ぱ':'は','ぴ':'ひ','ぷ':'ふ','ぺ':'へ','ぽ':'ほ'};
+// 前置符号：⑤=濁音、⑥=半濁音、④=拗音。拗濁音・拗半濁音は前置点を合成。
+const prefix={dakuten:16,handakuten:32,yoon:8};
+// 数字は数符(3456)＋a〜j系列、英字は外字符(56)＋アルファベット。
+const numberDots={'0':26,'1':1,'2':3,'3':9,'4':25,'5':17,'6':11,'7':27,'8':19,'9':10};
+const alphaDots={a:1,b:3,c:9,d:25,e:17,f:11,g:27,h:19,i:10,j:26,k:5,l:7,m:13,n:15,o:21,p:23,q:29,r:31,s:14,t:30,u:37,v:39,w:58,x:45,y:53,z:61};
+const numberSign=60, foreignSign=48, capitalSign=32;
+const bitToChar=n=>String.fromCodePoint(0x2800+n);
+function hira(s){return s.normalize('NFKC').replace(/[ァ-ヶ]/g,c=>String.fromCharCode(c.charCodeAt(0)-0x60));}
+function encode(s,particles=false){
+ const input=hira(s), out=[], warn=[]; let i=0;
+ const push=(dots,src,rule)=>out.push({dots,unicode:bitToChar(dots),source:src,rule});
+ while(i<input.length){
+  const c=input[i], n=input[i+1]||'';
+  if(c==='\n'||c==='\r'){out.push({break:true,source:c});i++;continue;}
+  if(c===' '||c==='　'){out.push({space:true,source:c});i++;continue;}
+  if(c==='っ'){push(2,c,'促音（暫定表記）');i++;continue;}
+  if(c==='ー'){push(18,c,'長音符');i++;continue;}
+  if(c==='、'){push(2,c,'読点（要公式照合）');i++;continue;}
+  if(c==='。'){push(50,c,'句点（要公式照合）');i++;continue;}
+  if(c==='！'||c==='!'){push(22,c,'感嘆符');i++;continue;}
+  if(c==='？'||c==='?'){push(38,c,'疑問符');i++;continue;}
+  if(c===','){push(2,c,'コンマ');i++;continue;}
+  if(c==='.') {push(50,c,'ピリオド');i++;continue;}
+  // 数字の連続をひとまとまりとして扱う。数符は数字列の先頭に一度だけ置く。
+  if(/[0-9]/.test(c)){
+    push(numberSign,c,'数符');
+    while(i<input.length && /[0-9]/.test(input[i])){push(numberDots[input[i]],input[i],'数字 '+input[i]);i++;}
+    continue;
+  }
+  // 日本語文中のアルファベットは外字符を前置。大文字には大文字符を追加。
+  if(/[a-zA-Z]/.test(c)){
+    push(foreignSign,c,'外字符');
+    while(i<input.length && /[a-zA-Z]/.test(input[i])){
+      const letter=input[i].toLowerCase();
+      if(input[i]!==letter) push(capitalSign,input[i],'大文字符');
+      push(alphaDots[letter],input[i],'アルファベット '+input[i]);i++;
+    }
+    continue;
+  }
+  if(particles && c==='は' && i>0 && /[ぁ-ん]/.test(input[i-1]) && (n===''||n===' '||n==='　'||n==='。'||n==='、')) {push(gojuon['わ'],c,'助詞候補「は」→ワ（簡易判定）');i++;continue;}
+  if(particles && c==='へ' && i>0 && /[ぁ-ん]/.test(input[i-1]) && (n===''||n===' '||n==='　'||n==='。'||n==='、')) {push(gojuon['え'],c,'助詞候補「へ」→エ（簡易判定）');i++;continue;}
+  // 拗音を先に判定する。ぎゃ等は濁音符＋拗音符を1マスに合成してから基底仮名を置く。
+  if(smallY[n]){
+    let base=c, lead=prefix.yoon, kind='拗音';
+    if(daku[c]){base=daku[c];lead|=prefix.dakuten;kind='拗濁音';}
+    else if(hand[c]){base=hand[c];lead|=prefix.handakuten;kind='拗半濁音';}
+    if(gojuon[base]!==undefined && /[きしちにひみり]/.test(base)){
+      push(lead,'拗音前置符号',kind+'前置符号');
+      push(gojuon[base],c+n,kind);
+      i+=2;continue;
+    }
+  }
+  if(daku[c]){push(prefix.dakuten,'濁音符','濁音符');push(gojuon[daku[c]],c,'濁音');i++;continue;}
+  if(hand[c]){push(prefix.handakuten,'半濁音符','半濁音符');push(gojuon[hand[c]],c,'半濁音');i++;continue;}
+  if(c==='ん'){push(gojuon['ん'],c,'撥音');i++;continue;}
+  if(gojuon[c]!==undefined){push(gojuon[c],c,'清音');i++;continue;}
+  if(/[ぁぃぅぇぉゃゅょゎ]/.test(c)){warn.push(c+'：単独の小書き仮名は未対応');i++;continue;}
+  warn.push(c+'：未対応文字');i++;
+ }
+ return {input, cells:out, warnings:warn};
+}
+let last={input:'',cells:[],warnings:[]}, dotValue=0, directCells=[];
+const $=id=>document.getElementById(id);
+function render(){
+ $('braille').textContent=last.cells.map(x=>x.break?'\n':x.space?'　':x.unicode).join('');
+ $('warnings').hidden=!last.warnings.length;
+ $('warnings').textContent=last.warnings.length?'確認が必要：\n'+last.warnings.join('\n'):'';
+ $('stats').textContent=`${last.cells.filter(x=>!x.break&&!x.space).length}マス / 警告 ${last.warnings.length}件`;
+ $('cells').innerHTML='';
+ last.cells.forEach((x,idx)=>{
+  if(x.break||x.space)return;
+  const el=document.createElement('div');el.className='cell';
+  const dots=Array.from({length:6},(_,i)=>x.dots&(1<<i)?i+1:null).filter(Boolean).join(',');
+  el.innerHTML=`<div class="braille"></div><div class="num"></div><div class="num"></div>`;
+  el.children[0].textContent=x.unicode;el.children[1].textContent='点 '+(dots||'なし');el.children[2].textContent=x.rule;
+  $('cells').append(el);
+ });
+}
+function convert(){last=encode($('src').value,$('particles').checked);render();}
+$('convert').onclick=convert;
+$('clear').onclick=()=>{$('src').value='';last=encode('');render();};
+$('save').onclick=()=>{
+ const payload={format:'JIMPAChi-BRAILLE-JSON',version:2,created:new Date().toISOString(),source:$('src').value,particles:$('particles').checked,conversion:last};
+ const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+ const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='braille-document.json';a.click();URL.revokeObjectURL(a.href);
+};
+$('load').onchange=async e=>{
+ const f=e.target.files[0];if(!f)return;
+ try{const obj=JSON.parse(await f.text());if(obj.format!=='JIMPAChi-BRAILLE-JSON'||!obj.conversion||!Array.isArray(obj.conversion.cells))throw Error('このアプリの保存形式ではありません');$('src').value=String(obj.source||'');$('particles').checked=obj.particles!==false;last=encode($('src').value,$('particles').checked);render();}
+ catch(err){alert('読み込みできません：'+err.message);}e.target.value='';
+};
+for(let d=1;d<=6;d++){const b=document.createElement('button');b.className='dot';b.type='button';b.textContent=d;b.setAttribute('aria-pressed','false');b.onclick=()=>{dotValue^=1<<(d-1);b.classList.toggle('on',!!(dotValue&(1<<(d-1))));b.setAttribute('aria-pressed',!!(dotValue&(1<<(d-1))));};$('dotpad').append(b);}
+function renderDirect(){$('direct').textContent=directCells.map(bitToChar).join('');}
+$('addcell').onclick=()=>{directCells.push(dotValue);dotValue=0;document.querySelectorAll('.dot').forEach(b=>{b.classList.remove('on');b.setAttribute('aria-pressed','false');});renderDirect();};
+$('backcell').onclick=()=>{directCells.pop();renderDirect();};
+$('clearcells').onclick=()=>{directCells=[];dotValue=0;document.querySelectorAll('.dot').forEach(b=>{b.classList.remove('on');b.setAttribute('aria-pressed','false');});renderDirect();};
+const sample=['あいうえお','かきくけこ','さしすせそ','たちつてと','なにぬねの','はひふへほ','まみむめも','らりるれろ','やゆよ わをん','がぎぐげご ざじずぜぞ','だぢづでど ばびぶべぼ','ぱぴぷぺぽ','きゃきゅきょ','ぎゃぎゅぎょ','しゃしゅしょ','じゃじゅじょ','ちゃちゅちょ','ぢゃぢゅぢょ','にゃにゅにょ','ひゃひゅひょ','びゃびゅびょ','ぴゃぴゅぴょ','みゃみゅみょ','りゃりゅりょ'];
+const checks=[
+ ['あいうえお',[1,3,9,11,10]],['かさたなは',[33,49,21,5,37]],
+ ['きゃ',[8,35]],['ぎゃ',[24,35]],['ぴょ',[40,39]],['しゃ',[8,51]],
+ ['じゃ',[24,51]],['びゅ',[24,39]],['りょ',[8,19]],['ぱ',[32,37]]
+];
+const failures=[];
+for(const [word,expected] of checks){const got=encode(word).cells.filter(x=>Number.isInteger(x.dots)).map(x=>x.dots);if(got.join(',')!==expected.join(',')||encode(word).warnings.length)failures.push(word+' expected '+expected+' got '+got);}
+// 日点委の例「ボクワ□ホンヤエ□イク」に対応する助詞変換を回帰検査。
+const sentence=encode('ぼくは ほんやへ いく',true);
+const sentenceText=sentence.cells.map(x=>x.space?'□':x.unicode||'').join('');
+if(sentence.warnings.length || sentenceText.split('□').length!==3 || sentence.cells.filter(x=>x.source==='は'&&x.rule.includes('ワ')).length!==1 || sentence.cells.filter(x=>x.source==='へ'&&x.rule.includes('エ')).length!==1) failures.push('実文章：ぼくは ほんやへ いく（助詞ワ・エ）');
+const katakana=encode('ボクハ ホンヤヘ イク',true);
+if(katakana.warnings.length || katakana.cells.length!==sentence.cells.length) failures.push('カタカナ入力の正規化');
+const nums=encode('2019');
+if(nums.warnings.length || nums.cells.map(x=>x.dots).join(',')!=='60,3,26,1,10') failures.push('数字列・数符');
+const letters=encode('aBc');
+if(letters.warnings.length || letters.cells.map(x=>x.dots).join(',')!=='48,1,32,3,9') failures.push('英字・大文字符・外字符');
+const punctuation=encode('!?.,');
+if(punctuation.warnings.length || punctuation.cells.map(x=>x.dots).join(',')!=='22,38,50,2') failures.push('基本句読符');
+const unsupported=encode('①');
+if(unsupported.warnings.length!==1 || unsupported.cells.length!==0) failures.push('未対応文字の警告・誤変換防止');
+// Unicode Brailleの6点全64組合せが重複なく往復することを検査。
+const patterns=Array.from({length:64},(_,n)=>bitToChar(n));
+if(new Set(patterns).size!==64||patterns.some((ch,n)=>ch.codePointAt(0)!==0x2800+n))failures.push('6点Unicode 64パターン');
+const rows=sample.map(s=>{const r=encode(s);return `<tr><td>${s}</td><td>${r.cells.map(x=>x.unicode||' ').join('')}</td><td>${r.warnings.length?'警告':'OK'}</td></tr>`;}).join('');
+$('tests').innerHTML='<p class="'+(failures.length?'warning':'good')+'">'+(failures.length?'検査失敗 '+failures.length+'件：'+failures.join(' / '):'自動検査 合格：仮名・拗音・実文章・数字・英字・句読符・未対応文字警告・Unicode 64パターン')+'</p><table><thead><tr><th>入力</th><th>点字</th><th>状態</th></tr></thead><tbody>'+rows+'</tbody></table>';
+
+// 現在のエンジンで変換できる文字・符号を列挙。点番号は1〜6。
+const inventory=[];
+function addInventory(category,label,source){
+ const r=encode(source,false);
+ if(r.warnings.length)return;
+ const cells=r.cells.filter(x=>Number.isInteger(x.dots));
+ cells.forEach((x,i)=>inventory.push({category,input:label+(cells.length>1?' ('+(i+1)+'/'+cells.length+')':''),braille:x.unicode,dots:Array.from({length:6},(_,j)=>x.dots&(1<<j)?j+1:null).filter(Boolean).join(',')||'なし'}));
+}
+for(const c of Object.keys(gojuon)) addInventory('清音',c,c);
+for(const c of Object.keys(daku)) addInventory('濁音',c,c);
+for(const c of Object.keys(hand)) addInventory('半濁音',c,c);
+for(const c of Object.keys(daku)) for(const y of Object.keys(smallY)) if(['き','し','ち','に','ひ','み','り'].includes(daku[c])) addInventory('拗音',c+y,c+y);
+for(const c of ['き','し','ち','に','ひ','み','り']) for(const y of Object.keys(smallY)) addInventory('拗音',c+y,c+y);
+for(const c of '0123456789') addInventory('数字',c,c);
+for(const c of 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ') addInventory('英字',c,c);
+for(const [c,desc] of [['っ','促音'],['ー','長音'],['、','読点'],['。','句点'],['！','感嘆符'],['？','疑問符'],[',','コンマ'],['.','ピリオド']]) addInventory('記号',c,c);
+for(const [c,desc] of [['濁音符', '⑤'],['半濁音符','⑥'],['拗音符','④'],['数符','3456'],['外字符','56'],['大文字符','6']]) {
+ const dots=({濁音符:16,半濁音符:32,拗音符:8,数符:numberSign,外字符:foreignSign,大文字符:capitalSign})[c];
+ inventory.push({category:'符号',input:c,braille:bitToChar(dots),dots:Array.from({length:6},(_,j)=>dots&(1<<j)?j+1:null).filter(Boolean).join(',')});
+}
+function renderInventory(){
+ const filter=$('inventoryFilter').value;
+ const data=filter==='all'?inventory:inventory.filter(x=>x.category===filter);
+ $('inventoryCount').textContent=data.length+'件表示';
+ $('inventory').innerHTML=data.map(x=>'<tr><td>'+x.category+'</td><td>'+x.input+'</td><td style="font-size:1.7rem">'+x.braille+'</td><td>'+x.dots+'</td></tr>').join('');
+}
+$('inventoryFilter').addEventListener('change',renderInventory);
+$('allPatterns').innerHTML=Array.from({length:64},(_,n)=>{
+ const dots=Array.from({length:6},(_,j)=>n&(1<<j)?j+1:null).filter(Boolean).join(',')||'なし';
+ return '<div class="cell"><div class="braille">'+bitToChar(n)+'</div><div class="num">'+dots+'</div></div>';
+}).join('');
+renderInventory();
+
+// 入力欄の日本語をブラウザ標準の音声合成で読み上げる。
+$('speak').onclick=()=>{
+ const text=$('src').value.trim();
+ if(!text){alert('読み上げる文字列を入力してください。');return;}
+ if(!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)){
+  alert('このブラウザは音声読み上げに対応していません。ChromeまたはEdgeでお試しください。');return;
+ }
+ window.speechSynthesis.cancel();
+ const utterance=new SpeechSynthesisUtterance(text);
+ utterance.lang='ja-JP';utterance.rate=1;utterance.pitch=1;
+ window.speechSynthesis.speak(utterance);
+};
+$('stopSpeak').onclick=()=>{if('speechSynthesis' in window)window.speechSynthesis.cancel();};
+window.addEventListener('beforeunload',()=>{if('speechSynthesis' in window)window.speechSynthesis.cancel();});
+convert();
+</script></body></html>
